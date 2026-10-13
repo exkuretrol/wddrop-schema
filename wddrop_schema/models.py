@@ -120,12 +120,27 @@ SCHEMA_VERSION = 3
 class CaptureMode(str, enum.Enum):
     """How the record was obtained.
 
-    One value today. It is still a field rather than an assumption because it is what lets
-    the analysis split on error profile — a second source with different error behaviour
-    could not be mixed in without one, and there WAS a second before it was removed for the
-    ban risk it carried."""
+    The field existed while it had ONE value, because it is what lets the analysis split on
+    error profile — a second source with different error behaviour could not be mixed in
+    without it, and there WAS a second before it was removed for the ban risk it carried.
+    That bet has now paid: AUTOPILOT is the second source arriving, and no column had to be
+    added for it.
+
+    THE TWO ARE NOT THE SAME POPULATION, and the difference is the study's own confound.
+    A human stops playing for reasons that may depend on what they just found — quitting
+    after a good drop or a bad streak correlates session end with drop quality and
+    manufactures the very pattern this study tests for. A bot stops because its route ended
+    or its dive limit was reached, which is independent of the contents. So autopilot rows
+    are the arm with that confound removed, and user rows are the arm with it present:
+    pooling them silently would waste the comparison, and splitting on this makes it.
+    """
 
     OCR = "ocr"          # reads the game's own result screens off the framebuffer
+    # Read by wd-autopilot, which plays unattended and decides WHEN to read from its own
+    # screen classification rather than from a HUD-absence episode. Same recogniser, same
+    # vocabulary, different sampling: it sees every chest it opens, where a human client
+    # sees the ones its capture loop happened to catch.
+    AUTOPILOT = "autopilot"
 
 
 class Provenance(str, enum.Enum):
@@ -149,6 +164,11 @@ class LabelSource(str, enum.Enum):
 
     USER_DECLARED = "user_declared"
     API = "api"
+    # The floor the client READ off the screen itself, rather than one a human typed into a
+    # dropdown and may have left stale. A different error profile, not a better one: it
+    # carries recognition error instead of attention error, and the mislabel rate of each
+    # is measurable only while they stay apart.
+    SCREEN_READ = "screen_read"
 
 
 class StopReason(str, enum.Enum):
@@ -166,6 +186,11 @@ class StopReason(str, enum.Enum):
     IDLE_TIMEOUT = "idle_timeout"
     GAME_CLOSED = "game_closed"
     APP_CLOSED = "app_closed"
+    # The bot's route finished, or its dive limit was reached. THE REASON THIS ENUM EXISTS,
+    # answered in the negative: a stop decided by a plan written before the dive began
+    # cannot depend on what the dive produced. It is the control the other values are
+    # compared against.
+    ROUTE_END = "route_end"
 
 
 class ReceivedItem(BaseModel):
