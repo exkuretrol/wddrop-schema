@@ -473,6 +473,30 @@ class DropEvent(BaseModel):
             raise ValueError("a mining event must carry its mining block")
         return self
 
+    @model_validator(mode="after")
+    def _truncated_agrees_with_the_end_reason(self) -> "DropEvent":
+        """`truncated` and `end_reason` must not contradict each other.
+
+        Both are kept — `truncated` is the flag analysis applies uniformly across chests and
+        veins without knowing what ended either, `end_reason` is why — and keeping both means
+        they CAN disagree. A row saying the vein was mined out and also that the list is short
+        is not a row anyone can interpret, and it would be interpreted anyway: every filter on
+        `truncated` and every filter on `end_reason` would silently select different sets.
+
+        Checked only on a closing row. A swing row has no `end_reason`, and can legitimately
+        be truncated on its own — the session can end while a banner is still being read.
+        """
+        end = self.mining.end_reason if self.mining else None
+        if end is None:
+            return self
+        incomplete = end in (VeinEnd.NO_PICKAXES, VeinEnd.GAVE_UP)
+        if self.truncated != incomplete:
+            raise ValueError(
+                f"end_reason={end.value} means the content list is "
+                f"{'short' if incomplete else 'complete'}, so truncated must be "
+                f"{incomplete}, not {self.truncated}")
+        return self
+
 
 class IngestBatch(BaseModel):
     """Clients batch events so a dive can be uploaded in one request."""
