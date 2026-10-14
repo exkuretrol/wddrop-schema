@@ -114,7 +114,9 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 # rather than changed quietly, so a batch that predates the trim is identifiable as one.
 # 3 adds the two self-reported covariates on CaptureInfo. ADDITIVE and optional, so a client
 # that never sends them stays valid and the ingest floor does not move for it.
-SCHEMA_VERSION = 3
+# 4 adds the optional `mining` block. ADDITIVE and optional on the same terms as 3: a client
+# that only opens chests never sends it and stays valid, and the ingest floor does not move.
+SCHEMA_VERSION = 4
 
 
 class CaptureMode(str, enum.Enum):
@@ -267,6 +269,85 @@ class ReceivedItem(BaseModel):
         return self
 
 
+class SpotSource(str, enum.Enum):
+    """What a vein's `spot` is anchored to, because the two do not age the same way.
+
+    ROUTE_STEP is anchored to the bot's own route — "step 3 of north_veins". It identifies a
+    spot only for as long as that route is unedited: insert a waypoint and every historical
+    row silently re-attributes to a different place, with nothing looking wrong. CELL is
+    anchored to the dungeon itself and survives any route change.
+
+    Recorded rather than assumed because route-anchored is all that is available today. The
+    tag is what stops a later, better value being pooled with it as though they were the same
+    measurement — which would quietly make the stable one as unreliable as the fragile one.
+    """
+
+    ROUTE_STEP = "route_step"
+    CELL = "cell"
+
+
+class VeinEnd(str, enum.Enum):
+    """Why mining at a spot stopped. `truncated` says WHETHER the list is short; this says why.
+
+    MINED_OUT and NOT_SPAWNED are complete observations. NO_PICKAXES and GAVE_UP are not: the
+    vein had more to give and we stopped, so those set `truncated` as well. Keeping both means
+    analysis can filter uniformly on `truncated` across chests and veins without re-encoding
+    this table, and still ask the sharper question when it wants to.
+    """
+
+    MINED_OUT = "mined_out"
+    NOT_SPAWNED = "not_spawned"
+    NO_PICKAXES = "no_pickaxes"
+    GAVE_UP = "gave_up"
+
+
+class VeinSpot(BaseModel):
+    """Where a vein was. See SpotSource for why the anchor is recorded with it."""
+
+    source: SpotSource
+    # ROUTE_STEP: which wall, which route, which step along it.
+    facing: str | None = Field(default=None, max_length=8)
+    route: str | None = Field(default=None, max_length=64)
+    step: int | None = Field(default=None, ge=0)
+    # CELL: the dungeon's own grid. Null until the bot can localise the party.
+    cell_x: int | None = None
+    cell_y: int | None = None
+
+
+class MiningContext(BaseModel):
+    """Mining-only fields. One record per SWING, plus one closing record per vein.
+
+    A swing is the unit because a swing is the ROLL — the same reason a chest is one record
+    rather than one per line. A vein is a SEQUENCE of independent rolls, so summing them into
+    one row would lose exactly the structure that rule exists to protect.
+
+    Which means the obvious aggregates are DERIVED, not stored, and cannot drift from the rows
+    they summarise:
+
+        taps            = count of swing records for the vein
+        pickaxes_broken = how many of them set `pickaxe_broken`
+
+    `pickaxe_item` is the item NAME and not an enum of the two known pickaxes, because the
+    vocabulary this project matches against went stale the moment the game shipped new items —
+    an enum would be that same bet made in a type.
+    """
+
+    vein_index_in_dive: int | None = Field(default=None, ge=0)
+    spot: VeinSpot | None = None
+
+    # ON A SWING ROW. `contents` carries what that swing yielded, and may be empty: a swing
+    # that gave nothing is an observation, not an absence, and dropping it would compute every
+    # rate over a population selected for having dropped something.
+    pickaxe_broken: bool = False
+    pickaxe_item: str | None = Field(default=None, max_length=64)
+
+    # ON THE CLOSING ROW, which has no contents. `vein_spawned=False` is a SPAWN observation,
+    # not a yield of zero — a spot where nothing spawned was never a trial, and folding it in
+    # with the yields would mix spawn rate into yield per vein. Filter on it.
+    vein_spawned: bool | None = None
+    end_reason: VeinEnd | None = None
+
+
 class DiveContext(BaseModel):
     """The independent variable lives here.
 
@@ -363,6 +444,8 @@ class DropEvent(BaseModel):
     # exclude it on evidence, which it cannot do if the flag stops at the client.
     truncated: bool = False
     dive: DiveContext | None = None
+    # Present only on `mining` rows; None for every chest. See MiningContext.
+    mining: MiningContext | None = None
     capture: CaptureInfo
 
     @field_validator("occurred_at")
@@ -371,6 +454,24 @@ class DropEvent(BaseModel):
         if v.tzinfo is None:
             raise ValueError("occurred_at must be timezone-aware (send UTC)")
         return v
+
+    @model_validator(mode="after")
+    def _mining_block_matches_provenance(self) -> "DropEvent":
+        """A mining block on a chest row, or a mining row without one, is a bug upstream.
+
+        Rejected rather than ignored. A silently dropped block is how `label_source` spent
+        months on this wire without ever reaching a column, and the cost was not the field: it
+        was that every row already stored had a label whose provenance was unanswerable
+        afterwards. A 422 is loud on the day it happens; a dropped field is discovered later,
+        if ever.
+        """
+        if self.mining is not None and self.provenance is not Provenance.MINING:
+            raise ValueError(
+                f"mining block on a {self.provenance.value} event; it belongs to "
+                f"{Provenance.MINING.value} rows only")
+        if self.provenance is Provenance.MINING and self.mining is None:
+            raise ValueError("a mining event must carry its mining block")
+        return self
 
 
 class IngestBatch(BaseModel):

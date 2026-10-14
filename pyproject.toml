@@ -1,6 +1,6 @@
 [project]
 name = "wddrop-schema"
-version = "0.2.0"
+version = "0.3.0"
 description = "Wire format shared by the wddrop client and server"
 requires-python = ">=3.11"
 license = "Apache-2.0"
