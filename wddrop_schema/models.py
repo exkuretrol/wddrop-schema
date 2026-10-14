@@ -231,6 +231,25 @@ class ReceivedItem(BaseModel):
         validation_alias=AliasChoices("quantity_unknown", "qty_unknown"),
         description="True when the game printed no number and the 1 is an assumption.",
     )
+    # HOW THE NAME WAS CHOSEN, and it changes what `match_confidence` means.
+    #
+    # Junk comes in families differing by ONE character in seventeen
+    # (北穿の幽霊城の常なる/妖なる四鱗のガラクタ), so the identical rest of the line drowns the
+    # difference: the whole-line scores sit within 0.03 and the ambiguity gate correctly
+    # refuses both. Re-scored over only the columns where the two candidates differ, the same
+    # frame separates at a margin of 0.44.
+    #
+    # The flag has to be here because the confidence beside it is the WHOLE-LINE score, which
+    # is low BY CONSTRUCTION for these — 0.83 where an unambiguous name reads 0.89. Analysis
+    # ranking on confidence alone would rate the most deliberate readings worst, and could
+    # not tell a thin whole-line margin that was resolved from one that was merely accepted.
+    # Measured: this tier read ZERO times in 195 bot-read lines before the tie-break reached
+    # the embedded reader.
+    tie_broken: bool = Field(
+        default=False,
+        description=("True when two near-identical candidates were separated on the columns "
+                     "where they differ, rather than on the whole line."),
+    )
 
     # -- equipment-only field (None for junk / sale-only) ---------------------------
     #
